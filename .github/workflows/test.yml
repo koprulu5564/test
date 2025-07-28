@@ -80,29 +80,44 @@ jobs:
             return all_items
 
         def get_live_channels():
-            live_categories = {
-                "Ulusal Kanallar": "${mainUrl}/api/channel/by/filtres/1/0/SAYFA/${swKey}/",
-                "Spor Kanalları": "${mainUrl}/api/channel/by/filtres/2/0/SAYFA/${swKey}/",
-                "Haber Kanalları": "${mainUrl}/api/channel/by/filtres/3/0/SAYFA/${swKey}/",
-                "Müzik Kanalları": "${mainUrl}/api/channel/by/filtres/4/0/SAYFA/${swKey}/",
-                "Sinema Kanalları": "${mainUrl}/api/channel/by/filtres/5/0/SAYFA/${swKey}/",
-                "Belgesel Kanalları": "${mainUrl}/api/channel/by/filtres/6/0/SAYFA/${swKey}/",
-                "Çocuk Kanalları": "${mainUrl}/api/channel/by/filtres/7/0/SAYFA/${swKey}/",
-                "Yerel Kanallar": "${mainUrl}/api/channel/by/filtres/8/0/SAYFA/${swKey}/"
-            }
+            print("\nFetching live channels with categories...")
+            base_url = f"{MAIN_URL}/api/channel/by/filtres/0/0/"
+            all_channels = get_all_pages(base_url, "Canlı Yayınlar")
             
-            results = {}
-            with ThreadPoolExecutor() as executor:
-                futures = []
-                for cat_name, url_template in live_categories.items():
-                    url = url_template.replace("${mainUrl}", MAIN_URL).replace("${swKey}", SW_KEY).replace("SAYFA", "0")
-                    base_url = url.rsplit('/', 2)[0] + "/"  # Sayfa numarası ve SW_KEY'den önceki kısım
-                    futures.append(executor.submit(get_all_pages, base_url, f"CANLI - {cat_name}"))
+            # API'den gelen kategori bilgilerine göre grupla
+            categories = {}
+            for channel in all_channels:
+                if not isinstance(channel, dict):
+                    continue
+                    
+                # API'den kategori bilgisini al
+                channel_categories = channel.get('categories', [])
+                if not channel_categories:
+                    continue
                 
-                for future, cat_name in zip(as_completed(futures), live_categories.keys()):
-                    results[cat_name] = future.result()
+                category_name = channel_categories[0].get('title')
+                if not category_name:
+                    continue
+                
+                if category_name not in categories:
+                    categories[category_name] = []
+                
+                # Sadece m3u8 kaynaklarını filtrele ve gereksiz bilgileri temizle
+                m3u8_sources = []
+                for s in channel.get('sources', []):
+                    if isinstance(s, dict) and s.get('type') == 'm3u8' and s.get('url'):
+                        # Kaynak başlığını temizle (parantez içindekileri kaldır)
+                        clean_title = channel.get('title', 'Unknown').split('(')[0].strip()
+                        m3u8_sources.append({
+                            'url': s.get('url'),
+                            'clean_title': clean_title
+                        })
+                
+                if m3u8_sources:
+                    channel['filtered_sources'] = m3u8_sources
+                    categories[category_name].append(channel)
             
-            return results
+            return categories
 
         def get_movies():
             movie_categories = [
@@ -110,14 +125,14 @@ jobs:
                 (14, "Aile Filmleri"),
                 (1, "Aksiyon Filmleri"),
                 (13, "Animasyon Filmleri"),
-                (19, "Belgeseller"),
+                (19, "Belgesel Filmleri"),
                 (4, "Bilim Kurgu Filmleri"),
                 (2, "Dram Filmleri"),
-                (10, "Fantastik Filmleri"),
+                (10, "Fantastik Filmler"),
                 (3, "Komedi Filmleri"),
                 (8, "Korku Filmleri"),
                 (17, "Macera Filmleri"),
-                (5, "Romantik Filmleri")
+                (5, "Romantik Filmler")
             ]
             
             results = {}
@@ -125,7 +140,7 @@ jobs:
                 futures = []
                 for cat_id, cat_name in movie_categories:
                     base_url = f"{MAIN_URL}/api/movie/by/filtres/{cat_id}/created/"
-                    futures.append(executor.submit(get_all_pages, base_url, f"FİLM - {cat_name}"))
+                    futures.append(executor.submit(get_all_pages, base_url, cat_name))
                 
                 for future, (cat_id, cat_name) in zip(as_completed(futures), movie_categories):
                     results[cat_name] = future.result()
@@ -139,9 +154,9 @@ jobs:
                 (2, "Dram Dizileri"),
                 (3, "Komedi Dizileri"),
                 (4, "Bilim Kurgu Dizileri"),
-                (5, "Polisiye Dizileri"),
-                (6, "Romantik Dizileri"),
-                (7, "Tarihi Dizileri")
+                (5, "Polisiye Diziler"),
+                (6, "Romantik Diziler"),
+                (7, "Tarih Dizileri")
             ]
             
             results = {}
@@ -149,7 +164,7 @@ jobs:
                 futures = []
                 for cat_id, cat_name in series_categories:
                     base_url = f"{MAIN_URL}/api/serie/by/filtres/{cat_id}/created/"
-                    futures.append(executor.submit(get_all_pages, base_url, f"DİZİ - {cat_name}"))
+                    futures.append(executor.submit(get_all_pages, base_url, cat_name))
                 
                 for future, (cat_id, cat_name) in zip(as_completed(futures), series_categories):
                     results[cat_name] = future.result()
@@ -176,20 +191,21 @@ jobs:
                     if not channels:
                         continue
                     
-                    f.write(f'#EXTINF:-1 group-title="CANLI - {category}",{category}\n')
+                    f.write(f'#EXTINF:-1 group-title="{category}",{category}\n')
                     for channel in channels:
-                        if not isinstance(channel, dict) or not channel.get('sources'):
+                        if not isinstance(channel, dict) or not channel.get('filtered_sources'):
                             continue
                             
-                        name = channel.get('title', 'Unknown')
-                        image = channel.get('image', '')
-                        url = channel['sources'][0].get('url', '')
-                        
-                        if url:
-                            f.write(f'#EXTINF:-1 tvg-id="{channel.get("id", "")}" tvg-name="{name}" tvg-logo="{image}" group-title="CANLI - {category}",{name}\n')
-                            f.write(f'#EXTVLCOPT:http-user-agent=googleusercontent\n')
-                            f.write(f'#EXTVLCOPT:http-referrer=https://twitter.com/\n')
-                            f.write(f"{url}\n\n")
+                        for source in channel['filtered_sources']:
+                            name = source['clean_title']  # Temizlenmiş başlık
+                            image = channel.get('image', '')
+                            url = source.get('url', '')
+                            
+                            if url:
+                                f.write(f'#EXTINF:-1 tvg-id="{channel.get("id", "")}" tvg-name="{name}" tvg-logo="{image}" group-title="{category}",{name}\n')
+                                f.write(f'#EXTVLCOPT:http-user-agent=googleusercontent\n')
+                                f.write(f'#EXTVLCOPT:http-referrer=https://twitter.com/\n')
+                                f.write(f"{url}\n\n")
                 
                 # 2. FİLMLER
                 print("\nProcessing Movies...")
@@ -198,7 +214,7 @@ jobs:
                     if not movies:
                         continue
                     
-                    f.write(f'#EXTINF:-1 group-title="FİLMLER - {category}",{category}\n')
+                    f.write(f'#EXTINF:-1 group-title="{category}",{category}\n')
                     for movie in movies:
                         if not isinstance(movie, dict) or not movie.get('sources'):
                             continue
@@ -208,19 +224,19 @@ jobs:
                         url = movie['sources'][0].get('url', '')
                         
                         if url:
-                            f.write(f'#EXTINF:-1 tvg-id="{movie.get("id", "")}" tvg-name="{name}" tvg-logo="{image}" group-title="FİLMLER - {category}",{name}\n')
+                            f.write(f'#EXTINF:-1 tvg-id="{movie.get("id", "")}" tvg-name="{name}" tvg-logo="{image}" group-title="{category}",{name}\n')
                             f.write(f'#EXTVLCOPT:http-user-agent=googleusercontent\n')
                             f.write(f'#EXTVLCOPT:http-referrer=https://twitter.com/\n')
                             f.write(f"{url}\n\n")
                 
-                # 3. DİZİLER
+                # 3. DİZİLER (Tekrar eden bölümler için düzenleme yapıldı)
                 print("\nProcessing Series...")
                 series_data = get_series()
                 for category, series in series_data.items():
                     if not series:
                         continue
                     
-                    f.write(f'#EXTINF:-1 group-title="DİZİLER - {category}",{category}\n')
+                    f.write(f'#EXTINF:-1 group-title="{category}",{category}\n')
                     
                     with ThreadPoolExecutor() as executor:
                         futures = []
@@ -229,6 +245,9 @@ jobs:
                                 continue
                                 
                             futures.append(executor.submit(get_episodes, serie['id']))
+                        
+                        # Tekrar eden bölümleri engellemek için kontrol
+                        added_episodes = set()
                         
                         for future, serie in zip(as_completed(futures), series):
                             episodes = future.result()
@@ -248,11 +267,24 @@ jobs:
                                         
                                     url = episode['sources'][0].get('url', '')
                                     if url:
-                                        ep_name = f"{serie_name} - {episode.get('title', 'Bölüm')}"
-                                        f.write(f'#EXTINF:-1 tvg-id="{episode.get("id", "")}" tvg-name="{ep_name}" tvg-logo="{serie_image}" group-title="DİZİLER - {category}",{ep_name}\n')
-                                        f.write(f'#EXTVLCOPT:http-user-agent=googleusercontent\n')
-                                        f.write(f'#EXTVLCOPT:http-referrer=https://twitter.com/\n')
-                                        f.write(f"{url}\n\n")
+                                        # Sezon ve bölüm bilgisini düzgün formatla
+                                        season_title = season.get('title', '')
+                                        episode_title = episode.get('title', '')
+                                        
+                                        # Sezon ve bölüm numaralarını çıkar
+                                        season_num = ''.join(filter(str.isdigit, season_title)) or '0'
+                                        episode_num = ''.join(filter(str.isdigit, episode_title)) or '0'
+                                        
+                                        ep_id = f"{serie_name}-S{season_num}E{episode_num}"
+                                        
+                                        # Eğer bu bölüm daha önce eklenmediyse
+                                        if ep_id not in added_episodes:
+                                            added_episodes.add(ep_id)
+                                            ep_name = f"{serie_name} S{season_num}E{episode_num}"
+                                            f.write(f'#EXTINF:-1 tvg-id="{episode.get("id", "")}" tvg-name="{ep_name}" tvg-logo="{serie_image}" group-title="{category}",{ep_name}\n')
+                                            f.write(f'#EXTVLCOPT:http-user-agent=googleusercontent\n')
+                                            f.write(f'#EXTVLCOPT:http-referrer=https://twitter.com/\n')
+                                            f.write(f"{url}\n\n")
             
             print("\nPlaylist generation completed successfully!")
 
